@@ -1,0 +1,78 @@
+services:
+  takserver-db:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tak
+      target: takserver-db
+      args:
+        TAK_VERSION: ${TAK_VERSION}
+    image: takserver-db:${TAK_VERSION}
+    pull_policy: build
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${TAK_DB_PASSWORD:-atakatak}
+      envpass: ${TAK_DB_PASSWORD:-atakatak}
+    # Postgres is reachable from the takserver container on the internal
+    # network alias `tak-database`. Uncomment to expose it on the host for
+    # debugging (psql, pgAdmin, ...).
+    # ports:
+    #   - "5432:5432"
+    volumes:
+      - takserver_db_data:/var/lib/postgresql/data
+    networks:
+      takserver-net:
+        aliases: [tak-database]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 4s
+      timeout: 3s
+      retries: 15
+
+  takserver:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tak
+      target: takserver
+      args:
+        TAK_VERSION: ${TAK_VERSION}
+    image: takserver:${TAK_VERSION}
+    pull_policy: build
+    depends_on:
+      takserver-db:
+        condition: service_healthy
+    environment:
+      CA_NAME: ${CA_NAME}
+      SERVER_HOSTNAMES: ${SERVER_HOSTNAMES}
+      CLIENT_NAMES: ${CLIENT_NAMES}
+      TAK_CERT_PASSWORD: ${TAK_CERT_PASSWORD}
+      TAK_DB_PASSWORD: ${TAK_DB_PASSWORD:-atakatak}
+      MULTI_HOST_DP: ${MULTI_HOST_DP:-false}
+      COUNTRY: ${COUNTRY}
+      STATE: ${STATE}
+      CITY: ${CITY}
+      ORGANIZATION: ${ORGANIZATION}
+      ORGANIZATIONAL_UNIT: ${ORGANIZATIONAL_UNIT}
+    ports:
+      - "8089:8089"
+      - "8443:8443"
+      - "8444:8444"
+      - "8446:8446"
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./data/certs:/opt/tak/certs/files
+      - takserver_logs:/opt/tak/logs
+    networks:
+      - takserver-net
+    restart: unless-stopped
+    init: true
+
+networks:
+  takserver-net:
+    name: takserver-${TAK_VERSION}
+
+volumes:
+  takserver_db_data:
+  takserver_logs:

@@ -1,0 +1,88 @@
+ARG TAK_VERSION
+ARG TAK_ZIP_FILE="takserver-docker-${TAK_VERSION}.zip"
+
+FROM alpine:3.23.3 AS tak-dist
+
+ARG TAK_VERSION
+ARG TAK_ZIP_FILE
+
+RUN set -eux; \
+    apk add --no-cache ca-certificates unzip sed; \
+    update-ca-certificates
+
+WORKDIR /tmp
+
+# Offline/local build: place the TAK release zip in the repository root so it
+# is part of the Docker build context, then select it during the build.
+COPY *.zip /tmp/
+
+RUN set -eux; \
+    : "${TAK_VERSION:?TAK_VERSION build-arg is required}"; \
+    if [ -n "${TAK_ZIP_FILE}" ]; then \
+      zip_path="/tmp/${TAK_ZIP_FILE}"; \
+      [ -f "${zip_path}" ] || { echo "Missing local TAK zip: ${zip_path}" >&2; exit 1; }; \
+    else \
+      set -- /tmp/takserver-docker-"${TAK_VERSION}".zip /tmp/TAKSERVER-DOCKER-"${TAK_VERSION}".zip; \
+      if [ -f "$1" ]; then \
+        zip_path="$1"; \
+      elif [ -f "$2" ]; then \
+        zip_path="$2"; \
+      else \
+        count="$(find /tmp -maxdepth 1 -type f -name '*.zip' | wc -l)"; \
+        [ "${count}" -eq 1 ] || { echo "Expected one root-level zip in the build context or pass TAK_ZIP_FILE" >&2; exit 1; }; \
+        zip_path="$(find /tmp -maxdepth 1 -type f -name '*.zip' | head -n 1)"; \
+      fi; \
+    fi; \
+    unzip "${zip_path}"; \
+    tak_dir="$(find /tmp -mindepth 2 -maxdepth 2 -type d -name tak | head -n 1)"; \
+    [ -n "${tak_dir}" ] || { echo "Could not find extracted tak directory inside ${zip_path}" >&2; exit 1; }; \
+    mkdir -p /opt; \
+    mv "${tak_dir}" /opt/tak; \
+    find /tmp -mindepth 1 -maxdepth 1 ! -name tak -exec rm -rf {} +; \
+    test -f /opt/tak/configureInDocker.sh
+
+# Note: do NOT bake a DB password into CoreConfig here. The takserver entrypoint
+# materialises CoreConfig.xml from CoreConfig.example.xml on first boot and
+# injects TAK_DB_PASSWORD at that point.
+
+
+
+FROM eclipse-temurin:17-jdk-jammy AS takserver
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash openssl ca-certificates netcat-openbsd zip \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tak-dist /opt/tak /opt/tak
+
+RUN mkdir -p /opt/tak/scripts
+COPY --chmod=755 docker/takserver-entrypoint.sh /opt/tak/scripts/takserver-entrypoint.sh
+
+COPY --chmod=755 docker/certDP.sh /opt/tak/scripts/certDP.sh
+COPY --chmod=755 docker/init-env.sh /opt/tak/scripts/init-env.sh
+COPY --chmod=755 docker/init-config.sh /opt/tak/scripts/init-config.sh
+COPY --chmod=755 docker/init-certs.sh /opt/tak/scripts/init-certs.sh
+COPY --chmod=755 docker/init-admin.sh /opt/tak/scripts/init-admin.sh
+COPY --chmod=755 docker/init-datapackages.sh /opt/tak/scripts/init-datapackages.sh
+COPY --chmod=755 docker/validate-env.sh /opt/tak/scripts/validate-env.sh
+
+# Normalize line endings (common when editing on Windows)
+RUN sed -i 's/\r$//' /opt/tak/scripts/takserver-entrypoint.sh \
+  && sed -i 's/\r$//' /opt/tak/scripts/certDP.sh \
+  && sed -i 's/\r$//' /opt/tak/scripts/init-*.sh \
+  && sed -i 's/\r$//' /opt/tak/scripts/validate-env.sh
+
+WORKDIR /opt/tak
+EXPOSE 8089 8443 8444 8446 9000 9001
+ENTRYPOINT ["/opt/tak/scripts/takserver-entrypoint.sh"]
+
+
+FROM postgis/postgis:15-3.3 AS takserver-db
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless ca-certificates procps \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tak-dist /opt/tak /opt/tak
+
+ENTRYPOINT ["/opt/tak/db-utils/configureInDocker.sh"]

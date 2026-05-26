@@ -1,0 +1,12 @@
+# Local config
+.env
+
+# TAK release zips dropped at the repo root for the build context
+/*.zip
+
+# Generated certs and Data Packages
+data/certs/*
+!data/certs/.gitkeep
+
+# Ad-hoc share dir created by scripts/shareCerts.sh (legacy)
+share/
