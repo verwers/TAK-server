@@ -1,5 +1,8 @@
+name: takserver-${TAK_VERSION}
+
 services:
   takserver-db:
+    container_name: takserver-db
     build:
       context: .
       dockerfile: docker/Dockerfile.tak
@@ -31,6 +34,7 @@ services:
       retries: 15
 
   takserver:
+    container_name: takserver
     build:
       context: .
       dockerfile: docker/Dockerfile.tak
@@ -70,9 +74,23 @@ services:
     init: true
 
 networks:
+  # External so the network is not destroyed by `docker compose down` and is
+  # shared across project names (e.g. when bumping TAK_VERSION).
+  # Create once with: docker network create takserver-net
   takserver-net:
-    name: takserver-${TAK_VERSION}
+    name: takserver-net
+    external: true
 
 volumes:
+  # External so the volumes survive `docker compose down -v` and are NOT
+  # recreated when TAK_VERSION (and therefore the project name) changes.
+  # This keeps the Postgres database persistent across TAK Server upgrades.
+  # Create once with:
+  #   docker volume create takserver-db-data
+  #   docker volume create takserver-logs
   takserver_db_data:
+    name: takserver-db-data
+    external: true
   takserver_logs:
+    name: takserver-logs
+    external: true

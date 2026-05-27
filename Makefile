@@ -1,10 +1,10 @@
-.PHONY: help setup validate deploy logs verify status test-client clean
+.PHONY: help setup validate init-resources deploy logs verify status test-client clean
 
 # TAK Server Docker Deployment Makefile
 # Provides convenient commands for common deployment tasks
 
 PROJECT_ROOT := $(shell pwd)
-DOCKER_COMPOSE := docker-compose
+DOCKER_COMPOSE := docker compose
 ENV_FILE := $(PROJECT_ROOT)/.env
 DOCKER_DIR := $(PROJECT_ROOT)/docker
 SCRIPTS_DIR := $(PROJECT_ROOT)/scripts
@@ -51,18 +51,31 @@ setup:
 validate:
 	@bash "$(DOCKER_DIR)/validate-env.sh"
 
+# ----------------------------------------------------------------------------
+# Persistent resources (external volumes + network)
+#
+# These survive `docker compose down` and version bumps so the Postgres
+# database and historical logs are not lost when TAK_VERSION changes.
+# Safe to run repeatedly; `docker volume/network create` already prints a
+# warning and exits 0 if the resource exists.
+# ----------------------------------------------------------------------------
+init-resources:
+	@docker volume create takserver-db-data >/dev/null
+	@docker volume create takserver-logs    >/dev/null
+	@docker network create takserver-net    >/dev/null 2>&1 || true
+
 # ============================================================================
 # Deployment
 # ============================================================================
 
-deploy: validate
+deploy: validate init-resources
 	@echo "Building and deploying TAK Server..."
 	$(DOCKER_COMPOSE) up -d --build
 	@echo ""
 	@echo "Containers starting. Monitor with: make logs"
 	@echo "Verify deployment with: make verify"
 
-start:
+start: init-resources
 	$(DOCKER_COMPOSE) up -d
 
 stop:
@@ -101,6 +114,10 @@ clean:
 
 reset:
 	$(DOCKER_COMPOSE) down -v
+	# External resources are not touched by `down -v`; remove them explicitly.
+	-docker volume rm takserver-db-data 2>/dev/null
+	-docker volume rm takserver-logs    2>/dev/null
+	-docker network rm takserver-net    2>/dev/null
 	rm -f "$(PROJECT_ROOT)/.env"
 	rm -rf "$(PROJECT_ROOT)/data/certs"
 	@echo "Reset complete. Run 'make setup' to reconfigure."
@@ -116,7 +133,7 @@ shell:
 
 ci-validate: validate
 
-ci-deploy: validate
+ci-deploy: validate init-resources
 	$(DOCKER_COMPOSE) up -d --build
 	@sleep 30
 	@bash "$(SCRIPTS_DIR)/verify-deployment.sh"

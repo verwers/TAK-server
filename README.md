@@ -116,6 +116,28 @@ Postgres is **not** exposed to the host by default — uncomment the `ports:`
 block under `takserver-db` in [docker-compose.yml](docker-compose.yml) if you
 need direct DB access.
 
+## Persistence
+
+The Postgres database and server logs live in **external** Docker volumes
+named `takserver-db-data` and `takserver-logs`, plus a shared
+`takserver-net` network. The `make deploy` / `.\make.ps1 deploy` targets
+create them automatically on first run.
+
+Because they are external:
+
+- `docker compose down` and even `docker compose down -v` leave them intact.
+- Bumping `TAK_VERSION` (which renames the Compose project) does **not**
+  recreate them — your database survives TAK Server upgrades.
+- The only command that actually wipes them is `make reset` /
+  `.\make.ps1 reset`, which is intentionally destructive.
+
+If you need to inspect or back up the data:
+
+```sh
+docker run --rm -v takserver-db-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/takserver-db-backup.tgz -C /data .
+```
+
 ## Handing out Data Packages
 
 The generated `.dp.zip` files live in [data/certs/](data/certs/). Get them onto
@@ -317,7 +339,9 @@ docker exec $(docker ps -q -f name=takserver-db) pg_isready -U postgres
 **Fixes:**
 - Ensure `POSTGRES_PASSWORD` matches `TAK_DB_PASSWORD` in `.env`
 - Check firewall/port binding: `make logs-db | tail -20`
-- Reset DB: `docker compose down -v && docker compose up -d`
+- Reset DB: `make reset && make deploy` (note: `docker compose down -v` no
+  longer wipes the database — the `takserver-db-data` volume is external on
+  purpose, so it survives version bumps. Use `make reset` to fully wipe.)
 
 ### ".env validation fails"
 

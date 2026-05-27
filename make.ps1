@@ -118,11 +118,22 @@ function Invoke-Validate {
     }
 }
 
+function Invoke-InitResources {
+    # Idempotent: creates the external volumes + network that docker-compose.yml
+    # expects. These survive `docker compose down` and version bumps so the
+    # Postgres database and historical logs are not lost when TAK_VERSION
+    # changes (which renames the Compose project).
+    docker volume create takserver-db-data | Out-Null
+    docker volume create takserver-logs    | Out-Null
+    docker network create takserver-net 2>$null | Out-Null
+}
+
 function Invoke-Deploy {
     Write-Section "Deploy TAK Server"
     Write-Host "Building and deploying containers..."
     
     Invoke-Validate
+    Invoke-InitResources
     
     docker compose up -d --build
     
@@ -133,6 +144,7 @@ function Invoke-Deploy {
 
 function Invoke-Start {
     Write-Host "Starting containers..."
+    Invoke-InitResources
     docker compose up -d
 }
 
@@ -144,6 +156,7 @@ function Invoke-Stop {
 function Invoke-Restart {
     Write-Host "Restarting containers..."
     docker compose stop
+    Invoke-InitResources
     docker compose up -d
 }
 
@@ -201,6 +214,10 @@ function Invoke-Clean {
 function Invoke-Reset {
     Write-Host "Hard reset: removing all data..."
     docker compose down -v
+    # External resources are not touched by `down -v`; remove them explicitly.
+    docker volume  rm takserver-db-data 2>$null | Out-Null
+    docker volume  rm takserver-logs    2>$null | Out-Null
+    docker network rm takserver-net     2>$null | Out-Null
     Remove-Item $envFile -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $projectRoot "data" "certs") -Recurse -ErrorAction SilentlyContinue
     Write-Success "Reset complete. Run '.\make.ps1 setup' to reconfigure."
@@ -224,6 +241,7 @@ function Invoke-CIValidate {
 
 function Invoke-CIDeploy {
     Invoke-Validate
+    Invoke-InitResources
     docker compose up -d --build
     Start-Sleep -Seconds 30
     & (Join-Path $projectRoot "verify-deployment.ps1")
