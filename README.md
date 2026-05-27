@@ -287,10 +287,31 @@ make test-client          # Attempt client TLS connection
 make logs                 # Watch TAK Server logs
 make logs-db              # Watch database logs
 make logs-all             # Watch all container logs
+make cot-tail             # Tail CoT messaging log inside the container
+make cot-sql              # Live stream of incoming CoT events (full XML, polls Postgres every 2s)
 make restart              # Restart containers
 ```
 
 For complete documentation, see the [Makefile](Makefile) or run `make help`.
+
+## Inspecting CoT traffic
+
+Two helpers ship out of the box:
+
+- **`make cot-tail`** — tails `/opt/tak/logs/takserver-messaging.log` inside the
+  container. At the default `INFO` log level this shows connection/subscription
+  events but **not** the individual CoT payloads. Useful for "is a client even
+  connecting?" debugging.
+
+- **`make cot-sql`** — polls the `cot_router` table in Postgres every 2 seconds
+  and prints each new CoT event as a fully reconstructed `<event>...</event>`
+  XML document (outer envelope + `<point>` + verbatim `<detail>`). This is the
+  easiest way to see what your clients are actually sending. Press `Ctrl-C` to
+  stop.
+
+  Note: CoT types that TAK Server doesn't persist (heartbeats, pings) won't
+  show up here. For true wire-level capture use the `socat` MITM trick or a
+  passive `pytak` listener.
 
 ## Layout
 

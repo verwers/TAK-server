@@ -7,7 +7,7 @@ param(
     [ValidateSet(
         'help',
         'setup', 'validate', 'deploy', 'start', 'stop', 'restart',
-        'verify', 'status', 'test-client', 'logs', 'logs-db', 'logs-all',
+        'verify', 'status', 'test-client', 'logs', 'logs-db', 'logs-all', 'cot-tail', 'cot-sql',
         'clean', 'reset', 'shell',
         'ci-validate', 'ci-deploy', 'ci-test', 'ci-clean'
     )]
@@ -67,6 +67,8 @@ Verification & Monitoring:
   logs                 - Tail TAK Server logs
   logs-db              - Tail database logs
   logs-all             - Tail all container logs
+  cot-tail             - Tail CoT messaging log inside the container
+  cot-sql              - Poll Postgres for the latest CoT events (live feed)
 
 Development:
   clean                - Remove containers and volumes
@@ -211,6 +213,71 @@ function Invoke-LogsAll {
     docker compose logs -f
 }
 
+function Invoke-CotTail {
+    $containerId = docker compose ps -q takserver
+    if (-not $containerId) {
+        Write-Host "TAK Server container not found. Start it with '.\make.ps1 deploy' or '.\make.ps1 start'."
+        exit 1
+    }
+    docker exec -it $containerId sh -c 'tail -F /opt/tak/logs/takserver-messaging.log'
+}
+
+function Invoke-CotSql {
+    $dbContainer = docker compose ps -q takserver-db
+    if (-not $dbContainer) {
+        Write-Host "Database container not running."
+        exit 1
+    }
+    if (-not (Test-Path $envFile)) {
+        Write-Host ".env not found. Run '.\make.ps1 setup' first."
+        exit 1
+    }
+    $pwLine = Select-String -Path $envFile -Pattern '^POSTGRES_PASSWORD=' | Select-Object -First 1
+    if (-not $pwLine) { Write-Host "POSTGRES_PASSWORD not set in .env"; exit 1 }
+    $pw = ($pwLine.Line -replace '^POSTGRES_PASSWORD=', '').Trim()
+
+    # Reconstruct the full CoT <event> XML from the cot_router columns. The
+    # outer envelope (uid/type/how/time/start/stale/point) is column data;
+    # the inner <detail>...</detail> XML is stored verbatim in `detail`.
+    #
+    # NOTE: avoid literal `"` in the SQL because PowerShell mangles double
+    # quotes when invoking native executables (docker.exe). We build them
+    # with chr(34) inside SQL instead.
+    $sqlTemplate = @'
+SELECT id || '|' ||
+  '<event version=' || chr(34) || '2.0' || chr(34) ||
+  ' uid='   || chr(34) || coalesce(uid,'')      || chr(34) ||
+  ' type='  || chr(34) || coalesce(cot_type,'') || chr(34) ||
+  ' how='   || chr(34) || coalesce(how,'')      || chr(34) ||
+  ' time='  || chr(34) || coalesce(to_char(time  at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),'') || chr(34) ||
+  ' start=' || chr(34) || coalesce(to_char(start at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),'') || chr(34) ||
+  ' stale=' || chr(34) || coalesce(to_char(stale at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),'') || chr(34) ||
+  '><point lat=' || chr(34) || coalesce(ST_Y(event_pt)::text,'0')   || chr(34) ||
+  ' lon='        || chr(34) || coalesce(ST_X(event_pt)::text,'0')   || chr(34) ||
+  ' hae='        || chr(34) || coalesce(point_hae::text,'9999999')  || chr(34) ||
+  ' ce='         || chr(34) || coalesce(point_ce::text,'9999999')   || chr(34) ||
+  ' le='         || chr(34) || coalesce(point_le::text,'9999999')   || chr(34) ||
+  '/>' || coalesce(detail,'') || '</event>'
+FROM cot_router WHERE id > {0} ORDER BY id ASC;
+'@
+
+    Write-Host "Polling cot_router for new CoT events (full XML). Ctrl-C to stop." -ForegroundColor Yellow
+    $lastId = 0
+    while ($true) {
+        $sql = [string]::Format($sqlTemplate, $lastId)
+        $out = docker exec -e PGPASSWORD=$pw $dbContainer psql -h 127.0.0.1 -U martiuser -d cot -A -t -c $sql 2>$null
+        if ($out) {
+            $out | ForEach-Object {
+                if ($_ -match '^(\d+)\|(.*)$') {
+                    Write-Host ("{0}: {1}" -f $Matches[1], $Matches[2])
+                    if ([int]$Matches[1] -gt $lastId) { $lastId = [int]$Matches[1] }
+                }
+            }
+        }
+        Start-Sleep -Seconds 2
+    }
+}
+
 function Invoke-Clean {
     Write-Host "Removing containers and volumes..."
     docker compose down
@@ -280,6 +347,8 @@ function Main {
         'logs'         = { Invoke-Logs }
         'logs-db'      = { Invoke-LogsDb }
         'logs-all'     = { Invoke-LogsAll }
+        'cot-tail'     = { Invoke-CotTail }
+        'cot-sql'      = { Invoke-CotSql }
         'clean'        = { Invoke-Clean }
         'reset'        = { Invoke-Reset }
         'shell'        = { Invoke-Shell }

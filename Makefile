@@ -1,4 +1,4 @@
-.PHONY: help setup validate init-resources deploy logs verify status test-client clean
+.PHONY: help setup validate init-resources deploy logs verify status test-client clean cot-tail cot-sql
 
 # TAK Server Docker Deployment Makefile
 # Provides convenient commands for common deployment tasks
@@ -29,6 +29,8 @@ help:
 	@echo "  make logs                 - Tail TAK Server logs"
 	@echo "  make logs-db              - Tail database logs"
 	@echo "  make logs-all             - Tail all container logs"
+	@echo "  make cot-tail             - Tail CoT messaging log inside the container"
+	@echo "  make cot-sql              - Poll Postgres for the latest CoT events (live feed)"
 	@echo ""
 	@echo "Development:"
 	@echo "  make clean                - Remove containers and volumes"
@@ -104,6 +106,25 @@ logs-db:
 
 logs-all:
 	$(DOCKER_COMPOSE) logs -f
+
+cot-tail:
+	docker exec -it $$(docker compose ps -q takserver) sh -c 'tail -F /opt/tak/logs/takserver-messaging.log'
+
+cot-sql:
+	@PW=$$(grep '^POSTGRES_PASSWORD=' $(ENV_FILE) | cut -d= -f2-); \
+	DB=$$(docker compose ps -q takserver-db); \
+	if [ -z "$$DB" ]; then echo "Database container not running."; exit 1; fi; \
+	echo "Polling cot_router for new CoT events (full XML). Ctrl-C to stop."; \
+	LAST=0; \
+	while true; do \
+		SQL="SELECT id || '|' || '<event version=\"2.0\" uid=\"' || coalesce(uid,'') || '\" type=\"' || coalesce(cot_type,'') || '\" how=\"' || coalesce(how,'') || '\" time=\"' || coalesce(to_char(time at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'') || '\" start=\"' || coalesce(to_char(start at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'') || '\" stale=\"' || coalesce(to_char(stale at time zone 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'') || '\"><point lat=\"' || coalesce(ST_Y(event_pt)::text,'0') || '\" lon=\"' || coalesce(ST_X(event_pt)::text,'0') || '\" hae=\"' || coalesce(point_hae::text,'9999999') || '\" ce=\"' || coalesce(point_ce::text,'9999999') || '\" le=\"' || coalesce(point_le::text,'9999999') || '\"/>' || coalesce(detail,'') || '</event>' FROM cot_router WHERE id > $$LAST ORDER BY id ASC;"; \
+		ROWS=$$(docker exec -e PGPASSWORD=$$PW $$DB psql -h 127.0.0.1 -U martiuser -d cot -A -t -c "$$SQL" 2>/dev/null); \
+		if [ -n "$$ROWS" ]; then \
+			echo "$$ROWS"; \
+			LAST=$$(echo "$$ROWS" | tail -n1 | cut -d'|' -f1); \
+		fi; \
+		sleep 2; \
+	done
 
 # ============================================================================
 # Development
