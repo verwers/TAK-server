@@ -77,6 +77,8 @@ All three approaches work on all platforms. Choose based on your preference:
 
 ## First-run
 
+macOS / Linux:
+
 ```sh
 cp .env.example .env
 # Edit .env: set SERVER_HOSTNAMES, CLIENT_NAMES, passwords, TAK_VERSION.
@@ -84,6 +86,18 @@ cp .env.example .env
 docker compose up -d --build
 docker compose logs -f takserver   # watch cert generation + startup
 ```
+
+Windows (PowerShell):
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env: set SERVER_HOSTNAMES, CLIENT_NAMES, passwords, TAK_VERSION.
+
+docker compose up -d --build
+docker compose logs -f takserver   # watch cert generation + startup
+```
+
+(Or just run `.\make.ps1 setup` for an interactive wizard.)
 
 On first boot the `takserver` container will:
 
@@ -133,8 +147,17 @@ Because they are external:
 
 If you need to inspect or back up the data:
 
+macOS / Linux:
+
 ```sh
 docker run --rm -v takserver-db-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/takserver-db-backup.tgz -C /data .
+```
+
+Windows (PowerShell):
+
+```powershell
+docker run --rm -v takserver-db-data:/data -v "${PWD}:/backup" alpine `
   tar czf /backup/takserver-db-backup.tgz -C /data .
 ```
 
@@ -144,12 +167,25 @@ The generated `.dp.zip` files live in [data/certs/](data/certs/). Get them onto
 your end-user devices however you like (USB, AirDrop, ATAK's "Import" flow,
 etc.). For quick LAN sharing there's a helper:
 
+macOS / Linux:
+
 ```sh
 # Safe default: serves on http://127.0.0.1:12345/
 ./scripts/shareCerts.sh
 
 # Explicitly opt in to LAN-wide sharing:
 ./scripts/shareCerts.sh --public --port 8000
+```
+
+Windows (PowerShell):
+
+```powershell
+# Safe default: serves on http://127.0.0.1:12345/
+.\scripts\shareCerts.ps1
+
+# Explicitly opt in to LAN-wide sharing (may require admin or a one-time
+# `netsh http add urlacl` — the script will tell you if it does):
+.\scripts\shareCerts.ps1 -Public -Port 8000
 ```
 
 Note that this serves the files over plain HTTP with no authentication. Stop
@@ -249,6 +285,8 @@ make verify               # Post-deployment health check
 make status               # Detailed status report
 make test-client          # Attempt client TLS connection
 make logs                 # Watch TAK Server logs
+make logs-db              # Watch database logs
+make logs-all             # Watch all container logs
 make restart              # Restart containers
 ```
 
@@ -282,7 +320,8 @@ scripts/
   setup.sh                      interactive setup wizard (macOS / Linux)
   verify-deployment.sh          post-deployment verification (macOS / Linux)
   status.sh                     health check & monitoring (macOS / Linux)
-  shareCerts.sh                 quick LAN HTTP server for distributing DPs
+  shareCerts.sh                 quick LAN HTTP server for distributing DPs (bash)
+  shareCerts.ps1                quick LAN HTTP server for distributing DPs (PowerShell)
   run-in-docker.sh              run any target in a throwaway container (bash)
   run-in-docker.ps1             run any target in a throwaway container (PowerShell)
 datapackages/                   example map source DPs you can import in ATAK
@@ -302,17 +341,34 @@ implementation automatically.
 **Root cause:** Client cert or connection isn't working.
 
 **Diagnosis:**
+
+macOS / Linux:
 ```sh
 make verify               # Check if infrastructure is ready
 make test-client          # Attempt actual TLS connection
 docker logs $(docker ps -q -f name=takserver) | grep -i error
 ```
 
+Windows (PowerShell):
+```powershell
+.\make.ps1 verify
+.\make.ps1 test-client
+docker logs (docker ps -q -f name=takserver) | Select-String -Pattern 'error'
+```
+
 **Fixes:**
-- Ensure port 8089 is reachable: `nc -zv <hostname> 8089`
-- Verify certificate generation: `ls -la data/certs/files/ | grep .p12`
-- Check Data Package contents: `unzip -l data/certs/<user>-*.dp.zip`
-- Recreate client cert: `CLIENT_NAMES=<user> docker compose restart takserver`
+- Ensure port 8089 is reachable:
+  - macOS / Linux: `nc -zv <hostname> 8089`
+  - Windows: `Test-NetConnection -ComputerName <hostname> -Port 8089`
+- Verify certificate generation:
+  - macOS / Linux: `ls -la data/certs/files/ | grep .p12`
+  - Windows: `Get-ChildItem data\certs\files\ -Filter *.p12`
+- Check Data Package contents:
+  - macOS / Linux: `unzip -l data/certs/<user>-*.dp.zip`
+  - Windows: `Get-ChildItem data\certs\*.dp.zip | ForEach-Object { [System.IO.Compression.ZipFile]::OpenRead($_.FullName).Entries.FullName }`
+- Recreate client cert:
+  - macOS / Linux: `CLIENT_NAMES=<user> docker compose restart takserver`
+  - Windows: `$env:CLIENT_NAMES='<user>'; docker compose restart takserver`
 
 ### "Containers stuck / not starting"
 
@@ -325,15 +381,25 @@ docker logs takserver-db  # Check database startup
 
 **Fixes:**
 - Wait 30+ seconds (DB initialization takes time)
-- Check logs for port conflicts: `nc -zv localhost 8089`
-- Reset and restart: `make reset && make deploy`
+- Check logs for port conflicts:
+  - macOS / Linux: `nc -zv localhost 8089`
+  - Windows: `Test-NetConnection -ComputerName localhost -Port 8089`
+- Reset and restart: `make reset && make deploy` (Windows: `.\make.ps1 reset; .\make.ps1 deploy`)
 
 ### "Database connection refused"
 
 **Diagnosis:**
+
+macOS / Linux:
 ```sh
 make status               # Check DB health
 docker exec $(docker ps -q -f name=takserver-db) pg_isready -U postgres
+```
+
+Windows (PowerShell):
+```powershell
+.\make.ps1 status
+docker exec (docker ps -q -f name=takserver-db) pg_isready -U postgres
 ```
 
 **Fixes:**
@@ -362,39 +428,80 @@ cat .env                  # Review configuration
 **Status:** This is usually non-fatal. The server runs fine; admin just won't have elevated privileges initially.
 
 **Manual fix:**
+
+macOS / Linux:
 ```sh
 docker exec $(docker ps -q -f name=takserver) \
+  java -jar /opt/tak/utils/UserManager.jar certmod -A /opt/tak/certs/files/admin.pem
+```
+
+Windows (PowerShell):
+```powershell
+docker exec (docker ps -q -f name=takserver) `
   java -jar /opt/tak/utils/UserManager.jar certmod -A /opt/tak/certs/files/admin.pem
 ```
 
 ### "How do I regenerate certificates?"
 
 **For a single user:**
+
+macOS / Linux:
 ```sh
 CLIENT_NAMES=<username> docker compose restart takserver
 ```
 
+Windows (PowerShell):
+```powershell
+$env:CLIENT_NAMES='<username>'; docker compose restart takserver
+```
+
 **For all users:**
+
+macOS / Linux:
 ```sh
 rm -rf data/certs/files/*
 docker compose restart takserver
 ```
 
+Windows (PowerShell):
+```powershell
+Remove-Item -Recurse -Force data\certs\files\*
+docker compose restart takserver
+```
+
 ### "How do I check initialization logs?"
 
+macOS / Linux:
 ```sh
 docker exec $(docker ps -q -f name=takserver) tail -50 /opt/tak/logs/init.log
 ```
 
+Windows (PowerShell):
+```powershell
+docker exec (docker ps -q -f name=takserver) tail -50 /opt/tak/logs/init.log
+```
+
 ### "Ports seem blocked / connection timeout"
 
+macOS / Linux:
 ```sh
 # Check which ports are listening
 netstat -tulpn 2>/dev/null | grep 8089    # Linux
-netstat -an | grep 8089                   # macOS / Windows
+netstat -an | grep 8089                   # macOS
 
 # Verify from inside container
 docker exec $(docker ps -q -f name=takserver) nc -zv localhost 8089
+```
+
+Windows (PowerShell):
+```powershell
+# Check which ports are listening on the host
+netstat -an | Select-String 8089
+# or:
+Get-NetTCPConnection -LocalPort 8089 -ErrorAction SilentlyContinue
+
+# Verify from inside the container
+docker exec (docker ps -q -f name=takserver) nc -zv localhost 8089
 ```
 
 ## Verification Workflow

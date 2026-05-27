@@ -72,6 +72,16 @@ services:
       - takserver-net
     restart: unless-stopped
     init: true
+    healthcheck:
+      # TCP probe of the CoT streaming listener inside the container.
+      # Uses 127.0.0.1 to avoid IPv6 (::1) resolution mismatches.
+      # Short start_period so monitoring can observe the unhealthy->healthy
+      # transition as TAK finishes booting.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8089"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
 
 networks:
   # External so the network is not destroyed by `docker compose down` and is

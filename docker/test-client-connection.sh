@@ -8,15 +8,25 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CERT_DIR="${SCRIPT_DIR}/../data/certs"
-FILES_DIR="${CERT_DIR}/files"
+
+# Support both execution contexts:
+# - Host checkout: docker/test-client-connection.sh -> ../data/certs/files
+# - takserver container: /opt/tak/scripts/test-client-connection.sh -> /opt/tak/certs/files
+if [[ -d "/opt/tak/certs/files" ]]; then
+  FILES_DIR="/opt/tak/certs/files"
+else
+  CERT_DIR="${SCRIPT_DIR}/../data/certs"
+  FILES_DIR="${CERT_DIR}/files"
+fi
 
 # Configuration
 TAK_HOST="${TAK_HOST:-localhost}"
 TAK_PORT="${TAK_PORT:-8089}"
 TEST_CLIENT="${TEST_CLIENT:-client}"
-CERT_PASSWORD="${CERT_PASSWORD:-atakatak}"
+CERT_PASSWORD="${CERT_PASSWORD:-${TAK_CERT_PASSWORD:-atakatak}}"
 TIMEOUT="${TIMEOUT:-10}"
+REGENERATE_ON_CERT_PASSWORD_MISMATCH="${REGENERATE_ON_CERT_PASSWORD_MISMATCH:-true}"
+CONNECT_WAIT_SECONDS="${CONNECT_WAIT_SECONDS:-45}"
 
 # Color output
 RED='\033[0;31m'
@@ -38,6 +48,49 @@ log_warn() {
 
 log_info() {
   echo "ℹ $1"
+}
+
+extract_client_materials() {
+  if openssl pkcs12 -in "$CLIENT_CERT" -passin "pass:${CERT_PASSWORD}" -out "$CLIENT_PEM" -nokeys &>/dev/null || \
+     openssl pkcs12 -legacy -in "$CLIENT_CERT" -passin "pass:${CERT_PASSWORD}" -out "$CLIENT_PEM" -nokeys &>/dev/null; then
+    log_pass "Extracted client certificate"
+  else
+    return 1
+  fi
+
+  if openssl pkcs12 -in "$CLIENT_CERT" -passin "pass:${CERT_PASSWORD}" -out "$CLIENT_KEY" -nocerts -nodes &>/dev/null || \
+     openssl pkcs12 -legacy -in "$CLIENT_CERT" -passin "pass:${CERT_PASSWORD}" -out "$CLIENT_KEY" -nocerts -nodes &>/dev/null; then
+    log_pass "Extracted client key"
+  else
+    return 1
+  fi
+
+  return 0
+}
+
+regenerate_client_cert() {
+  local cert_tool="/opt/tak/certs/makeCert.sh"
+  local cert_files_dir="/opt/tak/certs/files"
+
+  if [[ ! -x "$cert_tool" || ! -d "$cert_files_dir" ]]; then
+    return 1
+  fi
+
+  log_warn "Client certificate appears to use a different password; regenerating ${TEST_CLIENT}.p12 with current configuration"
+
+  rm -f "${cert_files_dir}/${TEST_CLIENT}.p12" \
+        "${cert_files_dir}/${TEST_CLIENT}.pem" \
+        "${cert_files_dir}/${TEST_CLIENT}.key" \
+        "${cert_files_dir}/${TEST_CLIENT}.csr" \
+        "${cert_files_dir}/${TEST_CLIENT}.jks" \
+        "${cert_files_dir}/${TEST_CLIENT}-trusted.pem"
+
+  if (cd "/opt/tak/certs" && PASS="${CERT_PASSWORD}" ./makeCert.sh client "${TEST_CLIENT}" >/dev/null 2>&1); then
+    log_pass "Regenerated client certificate for ${TEST_CLIENT}"
+    return 0
+  fi
+
+  return 1
 }
 
 echo "════════════════════════════════════════════════════════════════"
@@ -80,47 +133,75 @@ CLIENT_PEM="${TEMP_DIR}/${TEST_CLIENT}.pem"
 CLIENT_KEY="${TEMP_DIR}/${TEST_CLIENT}.key"
 
 # Extract certificate and key from PKCS12
-if openssl pkcs12 -in "$CLIENT_CERT" -passin "pass:${CERT_PASSWORD}" -out "$CLIENT_PEM" -nokeys &>/dev/null; then
-  log_pass "Extracted client certificate"
-else
-  log_fail "Failed to extract client certificate from P12 file"
-  exit 1
-fi
-
-if openssl pkcs12 -in "$CLIENT_CERT" -passin "pass:${CERT_PASSWORD}" -out "$CLIENT_KEY" -nocerts -nodes &>/dev/null; then
-  log_pass "Extracted client key"
-else
-  log_fail "Failed to extract client key from P12 file"
-  exit 1
+if ! extract_client_materials; then
+  if [[ "${REGENERATE_ON_CERT_PASSWORD_MISMATCH}" == "true" ]] && regenerate_client_cert; then
+    CLIENT_CERT="${FILES_DIR}/${TEST_CLIENT}.p12"
+    if ! extract_client_materials; then
+      log_fail "Failed to extract client certificate/key after regeneration"
+      log_info "Hint: set CERT_PASSWORD or TAK_CERT_PASSWORD to the password used for ${TEST_CLIENT}.p12"
+      exit 1
+    fi
+  else
+    log_fail "Failed to extract client certificate from P12 file"
+    log_info "Hint: set CERT_PASSWORD or TAK_CERT_PASSWORD to the password used for ${TEST_CLIENT}.p12"
+    exit 1
+  fi
 fi
 
 # Test TLS connection
 echo ""
 echo "Connection Test:"
-echo "Attempting TLS connection to $TAK_HOST:$TAK_PORT with client cert '$TEST_CLIENT'..."
 
-# Create a simple CoT message (minimal XML)
-# This is a bare-minimum valid CoT event for testing
-COT_MESSAGE='<?xml version="1.0" encoding="UTF-8"?>
-<event version="2.0" uid="test-client-'$(date +%s)'" type="a-h-G-E-S" time="'$(date -u +%Y-%m-%dT%H:%M:%SZ)'" start="'$(date -u +%Y-%m-%dT%H:%M:%SZ)'" stale="'$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)'">
-  <point lat="0.0" lon="0.0" hae="0.0" ce="9999999.0" le="9999999.0"/>
-  <detail>
-    <contact callsign="TestClient"/>
-  </detail>
-</event>'
-
-# Attempt connection with timeout
-CONNECTION_SUCCESS=0
-if command -v timeout &> /dev/null; then
-  if (timeout "$TIMEOUT" bash -c "echo '$COT_MESSAGE' | openssl s_client -connect '$TAK_HOST:$TAK_PORT' -cert '$CLIENT_PEM' -key '$CLIENT_KEY' -quiet 2>/dev/null" &>/dev/null); then
-    CONNECTION_SUCCESS=1
-  fi
-else
-  # Fallback without timeout (may hang if server is unresponsive)
-  if (echo "$COT_MESSAGE" | openssl s_client -connect "$TAK_HOST:$TAK_PORT" -cert "$CLIENT_PEM" -key "$CLIENT_KEY" -quiet 2>/dev/null) &>/dev/null; then
-    CONNECTION_SUCCESS=1
-  fi
+TARGET_HOST="$TAK_HOST"
+if [[ "$TARGET_HOST" == "localhost" ]]; then
+  # TAK commonly listens on IPv4 in-container; avoid ::1 resolution issues.
+  TARGET_HOST="127.0.0.1"
 fi
+
+echo "Attempting TLS handshake to $TARGET_HOST:$TAK_PORT with client cert '$TEST_CLIENT'..."
+
+CA_FILE=""
+if [[ -f "${FILES_DIR}/ca.pem" ]]; then
+  CA_FILE="${FILES_DIR}/ca.pem"
+elif [[ -f "${FILES_DIR}/root-ca.pem" ]]; then
+  CA_FILE="${FILES_DIR}/root-ca.pem"
+fi
+
+OPENSSL_ARGS=(
+  s_client
+  -connect "$TARGET_HOST:$TAK_PORT"
+  -cert "$CLIENT_PEM"
+  -key "$CLIENT_KEY"
+  -brief
+)
+
+if [[ -n "$CA_FILE" ]]; then
+  OPENSSL_ARGS+=( -CAfile "$CA_FILE" )
+fi
+
+TLS_OUTPUT=""
+CONNECTION_SUCCESS=0
+ATTEMPT=1
+MAX_ATTEMPTS=$(( (CONNECT_WAIT_SECONDS + 1) / 2 ))
+
+while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+  if command -v timeout &> /dev/null; then
+    TLS_OUTPUT="$(timeout "$TIMEOUT" openssl "${OPENSSL_ARGS[@]}" < /dev/null 2>&1 || true)"
+  else
+    TLS_OUTPUT="$(openssl "${OPENSSL_ARGS[@]}" < /dev/null 2>&1 || true)"
+  fi
+
+  if echo "$TLS_OUTPUT" | grep -q "CONNECTION ESTABLISHED"; then
+    CONNECTION_SUCCESS=1
+    break
+  fi
+
+  if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+    echo "  waiting for TAK listener... (${ATTEMPT}/${MAX_ATTEMPTS})"
+    sleep 2
+  fi
+  ((ATTEMPT++))
+done
 
 echo ""
 if [[ $CONNECTION_SUCCESS -eq 1 ]]; then
@@ -131,7 +212,12 @@ if [[ $CONNECTION_SUCCESS -eq 1 ]]; then
   echo "Client '$TEST_CLIENT' can successfully connect to $TAK_HOST:$TAK_PORT"
   exit 0
 else
-  log_fail "Failed to connect to $TAK_HOST:$TAK_PORT"
+  log_fail "Failed to connect to $TARGET_HOST:$TAK_PORT"
+  if [[ -n "$TLS_OUTPUT" ]]; then
+    echo ""
+    echo "OpenSSL output (first lines):"
+    echo "$TLS_OUTPUT" | sed -n '1,8p' | sed 's/^/  /'
+  fi
   echo ""
   echo "Diagnostics:"
   echo "  - Ensure TAK Server is running: docker ps | grep takserver"

@@ -190,7 +190,13 @@ function Invoke-TestClient {
     Write-Section "Test Client Connection"
     
     Write-Host "Attempting client connection test..."
-    docker exec $(docker ps -q -f "name=takserver") bash /opt/tak/docker/test-client-connection.sh
+    $containerId = docker compose ps -q takserver
+    if (-not $containerId) {
+        Write-Host "TAK Server container not found. Start it with '.\make.ps1 deploy' or '.\make.ps1 start'."
+        exit 1
+    }
+
+    docker exec $containerId bash /opt/tak/scripts/test-client-connection.sh
 }
 
 function Invoke-Logs {
@@ -224,7 +230,7 @@ function Invoke-Reset {
 }
 
 function Invoke-Shell {
-    $containerId = docker ps -q -f "name=takserver"
+    $containerId = docker compose ps -q takserver
     if ($containerId) {
         docker exec -it $containerId /bin/bash
     }

@@ -65,12 +65,14 @@ COPY --chmod=755 docker/init-certs.sh /opt/tak/scripts/init-certs.sh
 COPY --chmod=755 docker/init-admin.sh /opt/tak/scripts/init-admin.sh
 COPY --chmod=755 docker/init-datapackages.sh /opt/tak/scripts/init-datapackages.sh
 COPY --chmod=755 docker/validate-env.sh /opt/tak/scripts/validate-env.sh
+COPY --chmod=755 docker/test-client-connection.sh /opt/tak/scripts/test-client-connection.sh
 
 # Normalize line endings (common when editing on Windows)
 RUN sed -i 's/\r$//' /opt/tak/scripts/takserver-entrypoint.sh \
   && sed -i 's/\r$//' /opt/tak/scripts/certDP.sh \
   && sed -i 's/\r$//' /opt/tak/scripts/init-*.sh \
-  && sed -i 's/\r$//' /opt/tak/scripts/validate-env.sh
+  && sed -i 's/\r$//' /opt/tak/scripts/validate-env.sh \
+  && sed -i 's/\r$//' /opt/tak/scripts/test-client-connection.sh
 
 WORKDIR /opt/tak
 EXPOSE 8089 8443 8444 8446 9000 9001
