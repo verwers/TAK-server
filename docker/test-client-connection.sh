@@ -161,11 +161,13 @@ fi
 echo "Attempting TLS handshake to $TARGET_HOST:$TAK_PORT with client cert '$TEST_CLIENT'..."
 
 CA_FILE=""
-if [[ -f "${FILES_DIR}/ca.pem" ]]; then
-  CA_FILE="${FILES_DIR}/ca.pem"
-elif [[ -f "${FILES_DIR}/root-ca.pem" ]]; then
-  CA_FILE="${FILES_DIR}/root-ca.pem"
-fi
+for _ca_candidate in "${FILES_DIR}/ca.pem" "${FILES_DIR}/root-ca.pem" "${FILES_DIR}/ca.crt"; do
+  if [[ -f "$_ca_candidate" ]]; then
+    CA_FILE="$_ca_candidate"
+    break
+  fi
+done
+unset _ca_candidate
 
 OPENSSL_ARGS=(
   s_client
@@ -200,7 +202,7 @@ while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
     echo "  waiting for TAK listener... (${ATTEMPT}/${MAX_ATTEMPTS})"
     sleep 2
   fi
-  ((ATTEMPT++))
+  ((++ATTEMPT))
 done
 
 echo ""

@@ -30,6 +30,18 @@ $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = $scriptPath
 $certsDir = Join-Path $projectRoot "data" "certs"
 
+# Load .env so checks use the configured Postgres credentials/db name.
+$envVars = @{}
+$envFile = Join-Path $projectRoot ".env"
+if (Test-Path $envFile) {
+    Get-Content $envFile | Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' } | ForEach-Object {
+        $key, $val = $_ -split '=', 2
+        $envVars[$key.Trim()] = $val.Trim() -replace '^"(.*)"$', '$1'
+    }
+}
+$pgUser = if ($envVars['POSTGRES_USER']) { $envVars['POSTGRES_USER'] } else { 'martiuser' }
+$pgDb   = if ($envVars['POSTGRES_DB'])   { $envVars['POSTGRES_DB'] }   else { 'cot' }
+
 # ============================================================================
 # Output Functions
 # ============================================================================
@@ -136,49 +148,70 @@ foreach ($port in $ports.Keys | Sort-Object) {
 # Database health
 Write-Section "Database Status"
 
-$takserverId = Get-ContainerId "takserver"
-if ($takserverId) {
-    if (@(docker exec $takserverId pg_isready -h tak-database -U postgres 2>&1) -match "accepting") {
-        Write-Success "PostgreSQL is responsive"
-        
-        try {
-            $dbSize = docker exec $takserverId psql -U postgres -d cot -t -c "SELECT pg_size_pretty(pg_database_size('cot'))" 2>$null
-            if ($dbSize) {
-                Write-Info "Database size: $dbSize"
+$dbContainerId = Get-ContainerId "takserver-db"
+$takserverId   = Get-ContainerId "takserver"
+if ($dbContainerId) {
+    try {
+        # pg_isready runs inside the db container using the env vars already set there
+        $pgResult = docker exec $dbContainerId sh -c 'pg_isready -h localhost -U "$POSTGRES_USER" -d "$POSTGRES_DB"' 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "PostgreSQL is responsive"
+            
+            try {
+                $dbSize = docker exec $dbContainerId sh -c "psql -h localhost -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -t -c \"SELECT pg_size_pretty(pg_database_size('\$POSTGRES_DB'))\"" 2>\$null
+                if ($dbSize) {
+                    Write-Info "Database size: $($dbSize.Trim())"
+                }
             }
+            catch { }
         }
-        catch { }
+        else {
+            Write-ErrorCustom "PostgreSQL not responding"
+        }
     }
-    else {
-        Write-ErrorCustom "PostgreSQL not responding"
+    catch {
+        Write-ErrorCustom "Could not check PostgreSQL health"
     }
 }
 else {
-    Write-ErrorCustom "TAK Server container not found"
+    Write-ErrorCustom "Database container not found"
 }
 
 # Certificate status
 Write-Section "Certificate Status"
 
 if (Test-Path $certsDir) {
-    $caCert = Join-Path $certsDir "files" "ca.pem"
-    if (Test-Path $caCert) {
+    # Try candidates in order; certs land directly in data/certs/ (volume mount)
+    $caCandidates = @(
+        (Join-Path $certsDir "ca.pem"),
+        (Join-Path $certsDir "root-ca.pem"),
+        (Join-Path $certsDir "ca.crt"),
+        (Join-Path $certsDir "files" "ca.pem"),
+        (Join-Path $certsDir "files" "root-ca.pem"),
+        (Join-Path $certsDir "files" "ca.crt")
+    )
+    $caCert = $caCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($caCert) {
         try {
             if (Get-Command openssl -ErrorAction SilentlyContinue) {
                 $expDate = openssl x509 -in $caCert -noout -enddate 2>$null | ForEach-Object { $_ -replace "notAfter=" }
                 $expEpoch = [System.DateTime]::Parse($expDate).ToFileTimeUtc()
                 $currentEpoch = (Get-Date).ToFileTimeUtc()
                 $daysRemaining = [math]::Floor(($expEpoch - $currentEpoch) / (86400 * 10000000))
-                
-                if ($daysRemaining -gt 30) {
-                    Write-Success "CA certificate valid ($daysRemaining days remaining)"
-                }
-                elseif ($daysRemaining -gt 0) {
-                    Write-WarningCustom "CA certificate expiring soon ($daysRemaining days remaining)"
-                }
-                else {
-                    Write-ErrorCustom "CA certificate expired"
-                }
+            }
+            else {
+                $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($caCert)
+                $daysRemaining = [math]::Floor((($cert.NotAfter.ToUniversalTime()) - (Get-Date).ToUniversalTime()).TotalDays)
+            }
+
+            if ($daysRemaining -gt 30) {
+                Write-Success "CA certificate valid ($daysRemaining days remaining)"
+            }
+            elseif ($daysRemaining -gt 0) {
+                Write-WarningCustom "CA certificate expiring soon ($daysRemaining days remaining)"
+            }
+            else {
+                Write-ErrorCustom "CA certificate expired"
             }
         }
         catch { Write-Info "Could not check certificate expiry" }
@@ -187,10 +220,10 @@ if (Test-Path $certsDir) {
         Write-WarningCustom "CA certificate not found"
     }
     
-    $certCount = @(Get-ChildItem -Path $certsDir -MaxDepth 1 -Include "*.p12", "*.pem" -ErrorAction SilentlyContinue).Count
+    $certCount = @(Get-ChildItem -Path $certsDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.p12', '.pem') }).Count
     Write-Info "Certificates: $certCount files"
     
-    $dpCount = @(Get-ChildItem -Path $certsDir -MaxDepth 1 -Filter "*.dp.zip" -ErrorAction SilentlyContinue).Count
+    $dpCount = @(Get-ChildItem -Path $certsDir -Filter "*.dp.zip" -ErrorAction SilentlyContinue).Count
     Write-Info "Data Packages: $dpCount files"
 }
 else {
@@ -203,17 +236,25 @@ Write-Section "TAK Server Status"
 if ($takserverId) {
     $logs = docker logs $takserverId 2>&1
     
-    if ($logs | Select-String -Pattern "listening on port 8089|Marti started|TAK Server started" -CaseSensitive -ErrorAction SilentlyContinue) {
+    if ($logs | Select-String -Pattern "TAK Server is accepting connections|Started \S+Application|Application started" -ErrorAction SilentlyContinue) {
         Write-Success "TAK Server appears to be running"
     }
-    elseif ($logs | Select-String -Pattern "error|exception" -CaseSensitive -ErrorAction SilentlyContinue) {
-        Write-ErrorCustom "TAK Server has errors (check logs)"
-        $logs | Select-String -Pattern "error" -CaseSensitive -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object {
-            Write-Info "  Recent error: $(($_.ToString().Substring(0, [math]::Min(80, $_.ToString().Length))))..."
-        }
-    }
     else {
-        Write-WarningCustom "TAK Server status unclear (may still be starting)"
+        # Filter out known benign noise before declaring an error:
+        #   ch.qos.logback / org.codehaus      - logback/Janino internal status lines
+        #   ^\s+at                              - Java stack trace frames from logback
+        #   AltitudeConverter.*Failed to load  - expected warning when geoid data is absent
+        $realErrors = $logs | Select-String -Pattern "error|exception" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Line -notmatch 'ch\.qos\.logback|org\.codehaus|^\s+at |AltitudeConverter.*Failed to load' }
+        if ($realErrors) {
+            Write-ErrorCustom "TAK Server has errors (check logs)"
+            $realErrors | Select-Object -First 1 | ForEach-Object {
+                Write-Info "  Recent error: $(($_.Line.Substring(0, [math]::Min(120, $_.Line.Length))))"
+            }
+        }
+        else {
+            Write-WarningCustom "TAK Server status unclear (may still be starting)"
+        }
     }
 }
 else {
@@ -224,7 +265,8 @@ else {
 Write-Section "Initialization Log"
 
 if ($takserverId) {
-    if (@(docker exec $takserverId test -f /opt/tak/logs/init.log 2>&1) -match "^$") {
+    docker exec $takserverId test -f /opt/tak/logs/init.log 2>$null
+    if ($LASTEXITCODE -eq 0) {
         Write-Host "Last initialization entries:"
         docker exec $takserverId tail -5 /opt/tak/logs/init.log 2>$null | ForEach-Object {
             Write-Host "  $_"

@@ -17,7 +17,7 @@ source "${SCRIPT_DIR}/init-env.sh"
 ensure_root_ca() {
   log_info "Checking for root CA..."
   
-  if [[ -f "${FILES_DIR}/ca.pem" || -f "${FILES_DIR}/root-ca.pem" ]]; then
+  if [[ -f "${FILES_DIR}/ca.pem" || -f "${FILES_DIR}/root-ca.pem" || -f "${FILES_DIR}/ca.crt" ]]; then
     log_info "Root CA already exists, skipping generation"
     return 0
   fi
@@ -125,7 +125,7 @@ initialize_certificates() {
   for u in "${USERS[@]}"; do
     if ! ensure_client_cert "$u"; then
       log_error "Failed to generate certificate for user: $u"
-      ((failed++))
+      ((++failed))
     fi
   done
   

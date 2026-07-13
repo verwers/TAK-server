@@ -59,18 +59,18 @@ initialize_datapackages() {
     log_info "Multi-host Data Packages enabled (one per user, per host)"
     for u in "${USERS[@]}"; do
       for h in "${HOSTS[@]}"; do
-        ((total_dps++))
+        ((++total_dps))
         if ! create_datapackage "$u" "$h"; then
-          ((failed_dps++))
+          ((++failed_dps))
         fi
       done
     done
   else
     log_info "Single-host Data Packages (one per user for canonical host)"
     for u in "${USERS[@]}"; do
-      ((total_dps++))
+      ((++total_dps))
       if ! create_datapackage "$u" "${CANONICAL_HOST}"; then
-        ((failed_dps++))
+        ((++failed_dps))
       fi
     done
   fi

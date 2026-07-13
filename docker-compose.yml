@@ -49,6 +49,7 @@ services:
     environment:
       CA_NAME: ${CA_NAME}
       SERVER_HOSTNAMES: ${SERVER_HOSTNAMES}
+      SERVER_ADDRESS: ${SERVER_ADDRESS:-}
       CLIENT_NAMES: ${CLIENT_NAMES}
       TAK_CERT_PASSWORD: ${TAK_CERT_PASSWORD}
       TAK_DB_PASSWORD: ${TAK_DB_PASSWORD:-atakatak}
@@ -58,6 +59,23 @@ services:
       CITY: ${CITY}
       ORGANIZATION: ${ORGANIZATION}
       ORGANIZATIONAL_UNIT: ${ORGANIZATIONAL_UNIT}
+      # Silence noisy logback startup errors in the TAK war's logback-spring.xml.
+      # The war declares these as <springProperty>, but the retention/plugins JVMs
+      # initialize logback before Spring Boot's environment is loaded, leaving the
+      # placeholders as `*_IS_UNDEFINED` and breaking the <if> conditions plus the
+      # encoders nested inside them. Passing them as JVM system properties lets
+      # logback resolve them directly during its first init pass.
+      # NOTE: TAK's /opt/tak/setenv.sh overwrites JDK_JAVA_OPTIONS, so we use
+      # JAVA_TOOL_OPTIONS, which the JVM also auto-applies and TAK does not touch.
+      #
+      # `-Dserver.address=0.0.0.0` is required because Spring Boot's relaxed
+      # binding maps the env var SERVER_ADDRESS (used by init-config.sh to write
+      # the public urladd/webBaseUrl in CoreConfig.xml) to the Spring property
+      # `server.address`, which Tomcat then uses as the connector bind address.
+      # SERVER_ADDRESS is a public/external IP and is not on any interface
+      # inside the container, so Tomcat fails with "Cannot assign requested
+      # address". Forcing 0.0.0.0 here wins over the env-derived value.
+      JAVA_TOOL_OPTIONS: "-DAUDIT_ENABLED=false -DJSON_FORMAT_ENABLED=false -Dserver.address=0.0.0.0"
     ports:
       - "8089:8089"
       - "8443:8443"

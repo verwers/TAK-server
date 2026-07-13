@@ -8,6 +8,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Load .env so checks use the configured Postgres credentials/db name.
+# shellcheck disable=SC1091
+[[ -f "${PROJECT_ROOT}/.env" ]] && source "${PROJECT_ROOT}/.env"
+PG_USER="${POSTGRES_USER:-martiuser}"
+PG_DB="${POSTGRES_DB:-cot}"
+
 # Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -78,11 +84,11 @@ check_database() {
   log_section "Database Status"
   
   if takserver_id=$(get_container_id "takserver"); then
-    if docker exec "$takserver_id" pg_isready -h tak-database -U postgres &>/dev/null; then
+    if docker exec "$takserver_id" pg_isready -h tak-database -U "$PG_USER" -d "$PG_DB" &>/dev/null; then
       log_pass "PostgreSQL is responsive"
       
       # Get database size
-      if db_size=$(docker exec "$takserver_id" psql -U postgres -d cot -t -c "SELECT pg_size_pretty(pg_database_size('cot'))" 2>/dev/null); then
+      if db_size=$(docker exec "$takserver_id" psql -U "$PG_USER" -d "$PG_DB" -t -c "SELECT pg_size_pretty(pg_database_size('$PG_DB'))" 2>/dev/null); then
         log_info "Database size: $db_size"
       fi
     else
@@ -202,22 +208,31 @@ show_summary() {
   
   # Count results (simplified check)
   if container_is_running "takserver" && container_is_running "takserver-db"; then
-    ((passed++))
+    ((++passed))
   else
-    ((failed++))
+    ((++failed))
   fi
   
   if nc -z localhost 8089 &>/dev/null; then
-    ((passed++))
+    ((++passed))
   else
-    ((failed++))
+    ((++failed))
   fi
   
-  if [[ -f "${PROJECT_ROOT}/data/certs/files/ca.pem" ]]; then
-    ((passed++))
+  _ca_found=false
+  for _ca_candidate in \
+    "${PROJECT_ROOT}/data/certs/files/ca.pem" \
+    "${PROJECT_ROOT}/data/certs/files/root-ca.pem" \
+    "${PROJECT_ROOT}/data/certs/files/ca.crt"; do
+    if [[ -f "$_ca_candidate" ]]; then _ca_found=true; break; fi
+  done
+  unset _ca_candidate
+  if [[ "$_ca_found" == true ]]; then
+    ((++passed))
   else
-    ((failed++))
+    ((++failed))
   fi
+  unset _ca_found
   
   echo ""
   echo "Overall: ${passed} healthy, ${failed} issues"

@@ -21,12 +21,12 @@ VALIDATION_FAILED=0
 
 log_pass() {
   echo -e "${GREEN}✓${NC} $1"
-  ((VALIDATION_PASSED++))
+  ((++VALIDATION_PASSED))
 }
 
 log_fail() {
   echo -e "${RED}✗${NC} $1"
-  ((VALIDATION_FAILED++))
+  ((++VALIDATION_FAILED))
 }
 
 log_warn() {

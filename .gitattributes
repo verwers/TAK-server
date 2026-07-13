@@ -1,0 +1,30 @@
+# Enforce LF for files executed on Linux/containers; CRLF for Windows-only files.
+# This prevents `make deploy` / `make start` from failing on Linux due to bash
+# choking on `\r` in shebangs, `set -euo pipefail`, sourced .env values, etc.
+
+* text=auto eol=lf
+
+# Shell, Make, YAML, env, and Dockerfiles always LF
+*.sh        text eol=lf
+Makefile    text eol=lf
+*.mk        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.env       text eol=lf
+.env        text eol=lf
+.env.*      text eol=lf
+Dockerfile* text eol=lf
+*.dockerfile text eol=lf
+
+# Windows-specific files keep CRLF
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Binary files - never touch
+*.zip       binary
+*.p12       binary
+*.jks       binary
+*.crt       binary
+*.pem       binary
+*.key       binary

@@ -30,7 +30,7 @@ prompt_with_default() {
   read -p "$(echo -e "${BLUE}?${NC} $prompt ${YELLOW}[$default]${NC}: ")" value
   value="${value:-$default}"
   
-  eval "$varname='$value'"
+  printf -v "$varname" '%s' "$value"
 }
 
 prompt_yes_no() {
@@ -48,9 +48,9 @@ prompt_yes_no() {
   fi
   
   if [[ "$response" =~ ^[Yy]$ ]]; then
-    eval "$varname='true'"
+    printf -v "$varname" '%s' 'true'
   else
-    eval "$varname='false'"
+    printf -v "$varname" '%s' 'false'
   fi
 }
 
@@ -117,7 +117,9 @@ step_tak_version() {
   echo -e "${GREEN}1. TAK Server Release${NC}"
   echo ""
   echo "Found releases in project root:"
-  found=0
+  local found=0
+  local default_version=""
+  local file version
   while IFS= read -r file; do
     if [[ "$file" =~ takserver-docker-(.+)\.zip ]]; then
       version="${BASH_REMATCH[1]}"
@@ -146,7 +148,7 @@ step_tak_version() {
       echo -e "${GREEN}✓${NC} Using TAK Server version: $TAK_VERSION"
       break
     fi
-    ((attempts++))
+    ((++attempts))
   done
   
   if [[ $attempts -ge 3 ]]; then
@@ -171,7 +173,7 @@ step_server_config() {
       echo -e "${GREEN}✓${NC} Server hostnames: $SERVER_HOSTNAMES"
       break
     fi
-    ((attempts++))
+    ((++attempts))
   done
   
   if [[ $attempts -ge 3 ]]; then
@@ -196,7 +198,7 @@ step_client_config() {
       echo -e "${GREEN}✓${NC} Client usernames: $CLIENT_NAMES"
       break
     fi
-    ((attempts++))
+    ((++attempts))
   done
   
   if [[ $attempts -ge 3 ]]; then

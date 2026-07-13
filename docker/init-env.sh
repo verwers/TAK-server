@@ -104,22 +104,22 @@ validate_environment() {
   
   if [[ -z "${SERVER_HOSTNAMES}" ]]; then
     log_error "SERVER_HOSTNAMES is not set"
-    ((errors++))
+    ((++errors))
   fi
   
   if [[ -z "${CLIENT_NAMES}" ]]; then
     log_error "CLIENT_NAMES is not set"
-    ((errors++))
+    ((++errors))
   fi
   
   if [[ -z "${TAK_CERT_PASSWORD}" ]]; then
     log_error "TAK_CERT_PASSWORD is not set"
-    ((errors++))
+    ((++errors))
   fi
   
   if [[ ! -f "${CORE_EXAMPLE}" ]]; then
     log_error "CoreConfig.example.xml not found at $CORE_EXAMPLE"
-    ((errors++))
+    ((++errors))
   fi
   
   if [[ $errors -gt 0 ]]; then

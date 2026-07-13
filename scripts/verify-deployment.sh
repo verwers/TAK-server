@@ -11,6 +11,12 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CERTS_DIR="${PROJECT_ROOT}/data/certs"
 DOCKER_COMPOSE="${PROJECT_ROOT}/docker-compose.yml"
 
+# Load .env so checks use the configured Postgres credentials/db name.
+# shellcheck disable=SC1091
+[[ -f "${PROJECT_ROOT}/.env" ]] && source "${PROJECT_ROOT}/.env"
+PG_USER="${POSTGRES_USER:-martiuser}"
+PG_DB="${POSTGRES_DB:-cot}"
+
 # Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,12 +28,12 @@ CHECKS_FAILED=0
 
 log_pass() {
   echo -e "${GREEN}✓${NC} $1"
-  ((CHECKS_PASSED++))
+  ((++CHECKS_PASSED))
 }
 
 log_fail() {
   echo -e "${RED}✗${NC} $1"
-  ((CHECKS_FAILED++))
+  ((++CHECKS_FAILED))
 }
 
 log_warn() {
@@ -97,7 +103,7 @@ done
 echo ""
 echo "Database Health:"
 if takserver_id=$(get_container_id "takserver"); then
-  if docker exec "$takserver_id" pg_isready -h tak-database -U postgres &>/dev/null; then
+  if docker exec "$takserver_id" pg_isready -h tak-database -U "$PG_USER" -d "$PG_DB" &>/dev/null; then
     log_pass "PostgreSQL is responsive on internal network"
   else
     log_fail "PostgreSQL not responding (may still be starting)"
